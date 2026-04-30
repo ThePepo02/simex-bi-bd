@@ -1,0 +1,109 @@
+services:
+
+  spark:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+    restart: unless-stopped
+    user: root
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ./datos:/opt/spark/datos
+      - ./spark-warehouse:/opt/spark/spark-warehouse
+      - ./notebooks:/opt/spark/notebooks
+    ports:
+      - "8081:8080"
+      - "4040:4040"
+      - "7077:7077"
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark --port 7077 --webui-port 8080
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: spark-worker
+    restart: unless-stopped
+    user: root
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ./datos:/opt/spark/datos
+      - ./spark-warehouse:/opt/spark/spark-warehouse
+      - ./notebooks:/opt/spark/notebooks
+    depends_on:
+      - spark
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark:7077
+
+  jupyter:
+    image: apache/spark:3.5.1
+    container_name: jupyter-spark
+    restart: unless-stopped
+    user: root
+    ports:
+      - "8888:8888"
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ./notebooks:/opt/spark/notebooks
+      - ./datos:/opt/spark/datos
+      - ./spark-warehouse:/opt/spark/spark-warehouse
+    depends_on:
+      - spark
+    command: /bin/bash -c "pip install jupyter jupyterlab findspark --quiet && jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --notebook-dir=/opt/spark/notebooks --NotebookApp.token='' --NotebookApp.password='' --allow-root"
+
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    container_name: superset
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - SUPERSET_SECRET_KEY=clase_datos_2024
+      - SUPERSET_CONFIG_PATH=/app/superset_home/superset_config.py
+    depends_on:
+      - spark
+    volumes:
+      - ./superset_home:/app/superset_home
+      - ./spark-warehouse:/app/spark-warehouse
+    command: /bin/bash -c "superset db upgrade && superset fab create-admin --username admin --firstname admin --lastname admin --email admin@admin.com --password admin || true && superset init && gunicorn --bind 0.0.0.0:8088 --timeout 120 --workers 2 'superset.app:create_app()'"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      - ollama
+    restart: "no"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    entrypoint: /bin/bash
+    command: -c "sleep 10 && ollama pull qwen2.5-coder:1.5b"
+    environment:
+      - OLLAMA_HOST=ollama:11434
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    user: root
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_SECURE_COOKIE=false
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - SPARK_MASTER_URL=spark://spark:7077
+    depends_on:
+      - ollama
+      - spark
+    volumes:
+      - ./n8n_data:/home/node/.n8n
