@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Big Data — archivos pesados
+datos/
+spark-warehouse/
+ollama_data/
+n8n_data/
+superset_home/
+*.sqlite
+*.parquet
