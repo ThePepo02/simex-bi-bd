@@ -226,3 +226,4 @@ n8n_data/
 superset_home/
 *.sqlite
 *.parquet
+*.csv
