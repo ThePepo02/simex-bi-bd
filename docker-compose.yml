@@ -107,3 +107,15 @@ services:
       - spark
     volumes:
       - ./n8n_data:/home/node/.n8n
+      - ./spark-warehouse:/app/spark-warehouse:ro # El :ro es solo para leer
+
+  sqlite-api:
+    image: python:3.11-slim
+    container_name: sqlite-api
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./spark-warehouse:/app/spark-warehouse:ro
+      - ./sqlite_api.py:/app/sqlite_api.py:ro
+    command: python /app/sqlite_api.py
