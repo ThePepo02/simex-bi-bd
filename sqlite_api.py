@@ -13,41 +13,51 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._responder(200, {
-                "status": "ok",
-                "tablas": ["que_se_mueve", "quien_mueve", "rentabilidad", "desequilibrio"]
-            })
+            self._responder(200, {"status": "ok"})
         else:
-            self._responder(404, {"error": "Ruta no encontrada"})
+            self._responder(404, {"error": "Not found"})
 
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(length))
-
-        if self.path == "/query":
-            self._handle_query(body)
-        elif self.path == "/chat":
+        if self.path == "/chat":
             self._handle_chat(body)
+        elif self.path == "/query":
+            self._handle_query(body)
         else:
-            self._responder(404, {"error": "Ruta no encontrada"})
+            self._responder(404, {"error": "Not found"})
 
     def _handle_chat(self, body):
-        pregunta = body.get("pregunta", "")
+        pregunta = body.get("pregunta", "").lower()
+
+        if any(p in pregunta for p in ["producto", "commodity", "categoria", "category", "kg", "valor"]):
+            tabla = "que_se_mueve"
+            columnas = "category, commodity, flow, total_usd, total_kg, num_transacciones, valor_por_kg"
+        elif any(p in pregunta for p in ["pais", "country", "exporta", "importa", "quien"]):
+            tabla = "quien_mueve"
+            columnas = "country_or_area, flow, year, total_usd, total_kg, num_transacciones"
+        elif any(p in pregunta for p in ["rentab", "beneficio", "usd_por_kg"]):
+            tabla = "rentabilidad"
+            columnas = "category, year, total_usd, total_kg, usd_por_kg"
+        elif any(p in pregunta for p in ["desequilibrio", "balance", "export", "import"]):
+            tabla = "desequilibrio"
+            columnas = "country_or_area, year, Export, Import, balance_usd"
+        else:
+            tabla = "que_se_mueve"
+            columnas = "category, commodity, flow, total_usd, total_kg, num_transacciones, valor_por_kg"
 
         prompt = (
-            f"Eres un experto en SQL con acceso a una base de datos SQLite llamada prime_logistics "
-            f"con 4 tablas con estas columnas EXACTAS: "
-            f"que_se_mueve (category, commodity, flow, total_usd, total_kg, num_transacciones, valor_por_kg), "
-            f"quien_mueve (country_or_area, flow, year, total_usd, total_kg, num_transacciones), "
-            f"rentabilidad (category, year, total_usd, total_kg, usd_por_kg), "
-            f"desequilibrio (country_or_area, year, Export, Import, balance_usd). "
-            f'El usuario pregunta: "{pregunta}". '
-            f"IMPORTANTE: consulta SOLO UNA tabla, la mas relevante. "
-            f"Usa siempre el formato tabla.columna. "
-            f"Responde UNICAMENTE con SQL puro sin explicaciones ni markdown."
+            f"Escribe SQL para SQLite.\n"
+            f"USA SOLO esta tabla: {tabla}\n"
+            f"Columnas disponibles: {columnas}\n"
+            f"PROHIBIDO usar otras columnas o tablas.\n"
+            f"Termina con LIMIT 10.\n"
+            f"Escribe SOLO el SQL sin explicaciones.\n\n"
+            f"Pregunta: {pregunta}\n"
+            f"SQL:"
         )
 
-        ollama_payload = json.dumps({
+        payload = json.dumps({
             "model": "llama3.2:3b",
             "prompt": prompt,
             "stream": False
@@ -56,18 +66,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = urllib.request.Request(
                 OLLAMA_URL,
-                data=ollama_payload,
+                data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST"
             )
             with urllib.request.urlopen(req, timeout=120) as r:
-                ollama_resp = json.loads(r.read())
+                resp = json.loads(r.read())
 
-            sql_raw = ollama_resp.get("response", "")
-            sql = sql_raw.replace("```sql", "").replace("```", "").strip()
+            sql = resp.get("response", "").replace("```sql", "").replace("```", "").strip()
 
             if not sql.upper().startswith("SELECT"):
-                self._responder(400, {"error": "SQL no válido", "sql_generado": sql})
+                self._responder(400, {"error": "SQL no valido", "sql_generado": sql})
                 return
 
             conn = sqlite3.connect(DB_PATH)
@@ -77,10 +86,14 @@ class Handler(BaseHTTPRequestHandler):
                 cur.execute(sql)
                 rows = [dict(r) for r in cur.fetchall()]
                 conn.close()
+                texto = f"Encontre {len(rows)} resultado(s):\n"
+                for row in rows[:5]:
+                    texto += " | ".join(f"{k}: {v}" for k, v in row.items()) + "\n"
                 self._responder(200, {
                     "pregunta": pregunta,
                     "sql": sql,
-                    "respuesta": rows,
+                    "respuesta": texto,
+                    "datos": rows,
                     "total_filas": len(rows)
                 })
             except Exception as e:
@@ -93,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_query(self, body):
         sql = body.get("sql", "").strip()
         if not sql.upper().startswith("SELECT"):
-            self._responder(400, {"error": "Solo se permiten consultas SELECT"})
+            self._responder(400, {"error": "Solo SELECT"})
             return
         try:
             conn = sqlite3.connect(DB_PATH)
