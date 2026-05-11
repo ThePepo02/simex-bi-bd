@@ -6,6 +6,36 @@ import urllib.request
 DB_PATH = "/app/spark-warehouse/prime_logistics.sqlite"
 OLLAMA_URL = "http://ollama:11434/api/generate"
 
+
+def formatear_fila(row, idx):
+    nombres = {
+        "category": "Categoría",
+        "commodity": "Producto",
+        "flow": "Flujo",
+        "total_usd": "Total USD",
+        "total_kg": "Total KG",
+        "num_transacciones": "Transacciones",
+        "valor_por_kg": "USD/kg",
+        "country_or_area": "País",
+        "year": "Año",
+        "usd_por_kg": "USD/kg",
+        "Export": "Exportación USD",
+        "Import": "Importación USD",
+        "balance_usd": "Balance USD",
+    }
+    lineas = [f"**{idx}.**"]
+    for k, v in row.items():
+        if v is None:
+            continue
+        if isinstance(v, (int, float)) and abs(v) > 1000:
+            v_fmt = f"{v:,.0f}"
+        else:
+            v_fmt = str(v)
+        clave = nombres.get(k, k)
+        lineas.append(f"- {clave}: {v_fmt}")
+    return "\n".join(lineas)
+
+
 class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
@@ -52,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
             f"Columnas disponibles: {columnas}\n"
             f"PROHIBIDO usar otras columnas o tablas.\n"
             f"Termina con LIMIT 10.\n"
-            f"Escribe SOLO el SQL sin explicaciones.\n\n"
+            f"Escribe SOLO el SQL. PROHIBIDO escribir cualquier texto después del punto y coma. Sin notas, sin explicaciones, sin comentarios.\n\n"
             f"Pregunta: {pregunta}\n"
             f"SQL:"
         )
@@ -75,6 +105,15 @@ class Handler(BaseHTTPRequestHandler):
 
             sql = resp.get("response", "").replace("```sql", "").replace("```", "").strip()
 
+            # Cortar todo lo que venga después del primer punto y coma
+            if ";" in sql:
+                sql = sql[:sql.index(";") + 1].strip()
+            # Eliminar líneas que no sean SQL
+            sql = "\n".join(
+                line for line in sql.splitlines()
+                if not line.strip().startswith("Nota") and not line.strip().startswith("--")
+            ).strip()
+
             if not sql.upper().startswith("SELECT"):
                 self._responder(400, {"error": "SQL no valido", "sql_generado": sql})
                 return
@@ -86,9 +125,13 @@ class Handler(BaseHTTPRequestHandler):
                 cur.execute(sql)
                 rows = [dict(r) for r in cur.fetchall()]
                 conn.close()
-                texto = f"Encontre {len(rows)} resultado(s):\n"
-                for row in rows[:5]:
-                    texto += " | ".join(f"{k}: {v}" for k, v in row.items()) + "\n"
+
+                texto = f"Encontré **{len(rows)} resultado(s)**:\n\n"
+                for i, row in enumerate(rows[:5], 1):
+                    texto += formatear_fila(row, i) + "\n\n"
+                if len(rows) > 5:
+                    texto += f"_(mostrando 5 de {len(rows)})_"
+
                 self._responder(200, {
                     "pregunta": pregunta,
                     "sql": sql,
@@ -125,6 +168,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.end_headers()
         self.wfile.write(body)
+
 
 print("SQLite API corriendo en puerto 5050...")
 HTTPServer(("0.0.0.0", 5050), Handler).serve_forever()
